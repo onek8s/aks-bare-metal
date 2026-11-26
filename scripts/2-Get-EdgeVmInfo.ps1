@@ -18,12 +18,16 @@
 [CmdletBinding()]
 param(
     [string]$SettingsPath,
+    [string]$VmName,
+    [string]$EdgeMachineName,
     [switch]$EjectIso
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
 Assert-Admin
 $s = Get-Settings $SettingsPath
+if ($VmName) { $s.VmName = $VmName }
+if ($EdgeMachineName) { $s.EdgeMachineName = $EdgeMachineName }
 
 $vm = Get-VM -Name $s.VmName
 $settingData = Get-CimInstance -Namespace 'root\virtualization\v2' -ClassName 'Msvm_VirtualSystemSettingData' |

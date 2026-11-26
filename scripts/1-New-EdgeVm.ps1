@@ -16,18 +16,27 @@
     voucher. Use 2-Get-EdgeVmInfo.ps1 for the serial number / IP you need
     to fetch that voucher.
 
+.PARAMETER VmName
+    Override VmName from settings.psd1 (used by the multi-node beta scripts).
+    MacAddress from settings is ignored when this is set.
+
 .PARAMETER Force
     Delete and re-create the VM (and its disk) if it already exists.
 #>
 [CmdletBinding()]
 param(
     [string]$SettingsPath,
+    [string]$VmName,
     [switch]$Force
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
 Assert-Admin
 $s = Get-Settings $SettingsPath
+if ($VmName) {
+    $s.VmName = $VmName
+    $s.MacAddress = ''
+}
 
 if (-not (Get-Command New-VM -ErrorAction SilentlyContinue)) {
     throw 'Hyper-V PowerShell module not found. Enable Hyper-V and its management tools first.'

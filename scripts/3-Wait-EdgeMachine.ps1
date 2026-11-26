@@ -17,12 +17,14 @@
 [CmdletBinding()]
 param(
     [string]$SettingsPath,
+    [string]$EdgeMachineName,
     [int]$TimeoutMinutes = 120,
     [int]$PollSeconds = 60
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
 $s = Get-Settings $SettingsPath
+if ($EdgeMachineName) { $s.EdgeMachineName = $EdgeMachineName }
 Assert-AzCli
 Set-AzSubscription $s | Out-Null
 
