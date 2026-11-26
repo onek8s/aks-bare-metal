@@ -66,6 +66,24 @@
     # ARM template from Microsoft's Azure/aksArc repository.
     ArmTemplateUrl      = 'https://raw.githubusercontent.com/Azure/aksArc/main/deploymentTemplates/aks-baremetal-arm/aks-baremetal-arm.json'
 
+    # ---------------------------------------------------------------------
+    # BETA: multi-node cluster (scripts\beta). Not supported by the preview.
+    # ---------------------------------------------------------------------
+    MultiNode = @{
+        # One Hyper-V VM per node. Edge machine names in Azure default to the
+        # same names (set the Arc resource name to these when adding vouchers).
+        VmNames           = @('aksbm-node01', 'aksbm-node02', 'aksbm-node03', 'aksbm-node04')
+        ClusterName       = 'aksbm-multi01'
+        # 1, 3 or 5. With 4 machines and 3 control plane nodes you get 1 worker.
+        ControlPlaneCount = 3
+        # -1 = every machine not used for the control plane becomes a worker.
+        WorkerCount       = -1
+        # REQUIRED for more than one machine: unused, reserved IP in the
+        # machines' subnet, not equal to any machine's own IP.
+        ControlPlaneIp    = ''
+        PodCidr           = '10.244.0.0/16'
+    }
+
     # Where kubeconfig and downloaded files are written.
     OutputPath          = '.\out'
 }

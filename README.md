@@ -164,6 +164,70 @@ Use `-Proxy` when your PC can't reach the cluster's control plane IP directly.
 
 Each step asks for confirmation (add `-Confirm:$false` to skip).
 
+## BETA: multi-node cluster (experimental)
+
+> The AKS on bare metal preview says multi-node clusters are **not
+> supported**. This section is an experiment to see whether the resource
+> provider accepts them anyway. It has not been run.
+
+**How AKS on Azure Local does it.** The same API
+(`Microsoft.HybridContainerService/provisionedClusterInstances`) describes
+multi-node clusters with:
+
+- `controlPlane.count`: 1, 3 or 5 (odd, for etcd quorum)
+- `controlPlane.controlPlaneEndpoint.hostIP`: one control plane VIP per
+  cluster, separate from the node IPs
+- `agentPoolProfiles[]`: worker pools with `count`, `osType: Linux`,
+  `osSKU: CBLMariner` (Azure Linux) and, on Azure Local, a `vmSize`
+
+On Azure Local the nodes are VMs that the platform creates. On bare metal
+each node is a whole machine, and the machines come from the device pool
+(`Microsoft.AzureStackHCI/devicePools`, whose `devices[]` is a list). The
+API has no field that maps a node to a machine, so which machine becomes a
+control plane or a worker node is up to the resource provider.
+
+**What the beta template changes.**
+[`templates/aks-baremetal-multinode.json`](templates/aks-baremetal-multinode.json)
+is Microsoft's template with these changes:
+
+| | Microsoft's template | Beta template |
+|---|---|---|
+| Machines | `edgeMachineName` (one) | `edgeMachineNames` (array), all in one device pool |
+| Role assignments | Edge Machine Contributor on one machine | the same, on every machine (copy loop) |
+| `controlPlane.count` | hard-coded 1 | `controlPlaneCount` parameter (1/3/5, default 3) |
+| `agentPoolProfiles` | `[]` | `nodepool1` with `count` = machines left after the control plane (`workerCount`, -1 = auto) |
+| Control plane IP | optional, defaults to host IP | required with more than one machine (a VIP) |
+| Pod CIDR | hard-coded | `podCidr` parameter |
+| Device pool / custom location | named after the machine | `<cluster>-pool` / `<cluster>-cl` |
+
+**Try it.**
+
+1. Fill in `MultiNode` in `settings.psd1`. You need at least 3 VMs for 3
+   control plane nodes, plus one per worker. Also set `ControlPlaneIp` to an
+   unused IP in the VMs' subnet and reserve it in DHCP.
+2. Create the VMs: `.\scripts\beta\New-EdgeVms.ps1`
+3. For each VM, get its voucher with
+   `.\scripts\2-Get-EdgeVmInfo.ps1 -VmName <name> -EdgeMachineName <name> -EjectIso`.
+   Register all the vouchers in the same site, using the VM names as the
+   Arc resource names. Then wait with
+   `.\scripts\3-Wait-EdgeMachine.ps1 -EdgeMachineName <name>`.
+4. Preview what ARM would deploy: `.\scripts\beta\New-AksMultiNodeCluster.ps1 -WhatIf`
+5. Deploy: `.\scripts\beta\New-AksMultiNodeCluster.ps1`. It prints
+   `kubectl get nodes` at the end.
+
+Clean up with `.\scripts\9-Remove-All.ps1 -ResourceGroup -Vm`, then
+delete the other VMs with `Remove-VM`. The single-node cleanup uses the
+single-node resource names, so remove a beta cluster by deleting the
+resource group.
+
+**Likely outcomes**, from most to least likely:
+
+- The deployment is rejected because the preview validates
+  `controlPlane.count == 1` or allows only one device per pool.
+- It succeeds but only one machine joins.
+- It works. If so, please report it in
+  [Azure/aksArc issues](https://github.com/Azure/aksArc/issues).
+
 ## Notes and limits (preview)
 
 - East US only; single-node clusters only; Kubernetes 1.34 on Azure Linux;

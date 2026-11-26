@@ -2,7 +2,7 @@
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
   "metadata": {
-    "description": "AKS Arc on Bare Metal Linux — Cluster Creation ARM Template. Creates an AKS Arc cluster on a bare metal Linux edge machine that is already in the Provisioned state. Achieves parity with the portal UX creation flow."
+    "description": "BETA / EXPERIMENTAL. Multi-node variant of Microsoft's AKS Arc on Bare Metal Linux template (github.com/Azure/aksArc deploymentTemplates/aks-baremetal-arm). Puts several provisioned edge machines into one device pool and asks for N control plane nodes plus a worker pool. Multi-node is NOT supported by the AKS on bare metal preview; the resource provider may reject it."
   },
   "parameters": {
     "location": {
@@ -31,7 +31,7 @@
       "type": "string",
       "defaultValue": "",
       "metadata": {
-        "description": "Static IP for the Kubernetes API server. Leave empty for auto-assignment."
+        "description": "Control plane endpoint IP (VIP). Required when more than one machine is used: an unused, reserved IP in the machines' subnet that is not any machine's own IP."
       }
     },
     "enableAzureRbac": {
@@ -81,42 +81,84 @@
         "description": "Azure resource tags applied to all created resources."
       }
     },
-    "edgeMachineName": {
-      "type": "string",
-      "metadata": {
-        "description": "Name of the existing EdgeMachine resource (must be in Provisioned state)."
-      }
-    },
     "devicePoolName": {
       "type": "string",
-      "defaultValue": "[parameters('edgeMachineName')]",
+      "defaultValue": "[format('{0}-pool', parameters('clusterName'))]",
       "metadata": {
-        "description": "Name for the DevicePool resource. Defaults to the edge machine name."
+        "description": "Name for the DevicePool resource. Defaults to <clusterName>-pool."
       }
     },
     "customLocationName": {
       "type": "string",
-      "defaultValue": "[parameters('edgeMachineName')]",
+      "defaultValue": "[format('{0}-cl', parameters('clusterName'))]",
       "metadata": {
         "description": "Name for the CustomLocation created by HCI RP during DevicePool provisioning."
+      }
+    },
+    "edgeMachineNames": {
+      "type": "array",
+      "minLength": 1,
+      "metadata": {
+        "description": "Names of the provisioned edge machines (Microsoft.AzureStackHCI/edgeMachines) to put in the cluster."
+      }
+    },
+    "controlPlaneCount": {
+      "type": "int",
+      "defaultValue": 3,
+      "allowedValues": [
+        1,
+        3,
+        5
+      ],
+      "metadata": {
+        "description": "Number of control plane nodes (1, 3 or 5)."
+      }
+    },
+    "workerCount": {
+      "type": "int",
+      "defaultValue": -1,
+      "metadata": {
+        "description": "Number of worker nodes in nodepool1. -1 = all machines not used for the control plane. 0 = no worker pool (workloads run on control plane nodes)."
+      }
+    },
+    "workerPoolName": {
+      "type": "string",
+      "defaultValue": "nodepool1"
+    },
+    "podCidr": {
+      "type": "string",
+      "defaultValue": "10.244.0.0/16",
+      "metadata": {
+        "description": "Pod CIDR. Must not overlap your LAN."
       }
     }
   },
   "variables": {
-    "controlPlaneCount": 1,
-    "podCidr": "10.244.0.0/16",
+    "controlPlaneCount": "[parameters('controlPlaneCount')]",
+    "podCidr": "[parameters('podCidr')]",
     "lnetName": "[format('{0}-lnet', parameters('clusterName'))]",
     "lnetAddressPrefix": "10.0.0.0/24",
     "lnetGateway": "10.0.0.1",
     "lnetIpPoolStart": "10.0.0.2",
     "lnetIpPoolEnd": "10.0.0.10",
     "lnetVmSwitchName": "PlaceholderSwitch",
-    "edgeMachineResourceId": "[resourceId('Microsoft.AzureStackHCI/EdgeMachines', parameters('edgeMachineName'))]",
     "customLocationResourceId": "[resourceId('Microsoft.ExtendedLocation/customLocations', parameters('customLocationName'))]",
     "mergedTags": "[union(parameters('tags'), createObject('aks-arc-cluster', parameters('clusterName'), 'purpose', 'aks-arc-bmlinux'))]",
     "connectedClusterName": "[parameters('clusterName')]",
     "devicePoolManagerRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'adc3c795-c41e-4a89-a478-0b321783324c')]",
-    "edgeMachineContributorRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '1a6f9009-515c-4455-b170-143e4c9ce229')]"
+    "edgeMachineContributorRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '1a6f9009-515c-4455-b170-143e4c9ce229')]",
+    "machineCount": "[length(parameters('edgeMachineNames'))]",
+    "workerCountResolved": "[if(less(parameters('workerCount'), 0), max(0, sub(length(parameters('edgeMachineNames')), parameters('controlPlaneCount'))), parameters('workerCount'))]",
+    "agentPoolProfiles": "[if(greater(variables('workerCountResolved'), 0), createArray(createObject('name', parameters('workerPoolName'), 'count', variables('workerCountResolved'), 'osType', 'Linux', 'osSKU', 'CBLMariner')), createArray())]",
+    "copy": [
+      {
+        "name": "devices",
+        "count": "[length(parameters('edgeMachineNames'))]",
+        "input": {
+          "deviceResourceId": "[resourceId('Microsoft.AzureStackHCI/EdgeMachines', parameters('edgeMachineNames')[copyIndex('devices')])]"
+        }
+      }
+    ]
   },
   "resources": [
     {
@@ -128,11 +170,7 @@
         "type": "SystemAssigned"
       },
       "properties": {
-        "devices": [
-          {
-            "deviceResourceId": "[variables('edgeMachineResourceId')]"
-          }
-        ],
+        "devices": "[variables('devices')]",
         "customLocationName": "[parameters('customLocationName')]"
       },
       "tags": "[variables('mergedTags')]"
@@ -155,8 +193,8 @@
     {
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
-      "name": "[guid(variables('edgeMachineResourceId'), 'emContributor', variables('edgeMachineContributorRoleId'))]",
-      "scope": "[format('Microsoft.AzureStackHCI/EdgeMachines/{0}', parameters('edgeMachineName'))]",
+      "name": "[guid(resourceId('Microsoft.AzureStackHCI/EdgeMachines', parameters('edgeMachineNames')[copyIndex()]), 'emContributor', variables('edgeMachineContributorRoleId'))]",
+      "scope": "[format('Microsoft.AzureStackHCI/EdgeMachines/{0}', parameters('edgeMachineNames')[copyIndex()])]",
       "dependsOn": [
         "[resourceId('Microsoft.AzureStackHCI/devicePools', parameters('devicePoolName'))]"
       ],
@@ -165,6 +203,10 @@
         "principalId": "[reference(resourceId('Microsoft.AzureStackHCI/devicePools', parameters('devicePoolName')), '2024-11-01-preview', 'full').identity.principalId]",
         "principalType": "ServicePrincipal",
         "description": "DevicePool MSI needs Edge Machine Contributor role for CAPE lifecycle operations"
+      },
+      "copy": {
+        "name": "edgeMachineRoleAssignments",
+        "count": "[length(parameters('edgeMachineNames'))]"
       }
     },
     {
@@ -261,7 +303,7 @@
             ]
           }
         },
-        "agentPoolProfiles": [],
+        "agentPoolProfiles": "[variables('agentPoolProfiles')]",
         "linuxProfile": {
           "ssh": {
             "publicKeys": [
@@ -340,6 +382,14 @@
       "metadata": {
         "description": "DevicePool Managed Identity principal ID."
       }
+    },
+    "controlPlaneCount": {
+      "type": "int",
+      "value": "[parameters('controlPlaneCount')]"
+    },
+    "workerCount": {
+      "type": "int",
+      "value": "[variables('workerCountResolved')]"
     }
   }
 }
